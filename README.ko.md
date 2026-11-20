@@ -9,6 +9,14 @@ macOS 버전인 [MacTR](https://github.com/beret21/MacTR)의 Jetson판입니다.
 
 ![미리보기](img/preview.png)
 
+## 하드웨어
+
+- **디스플레이:** Thermalright Trofeo Vision 9.16 LCD (9.16인치, 1920×480 IPS, USB Type-C, 자석 거치)
+  - 제조사: [블랙](https://www.thermalright.com/product/trofeo-vision-9-16-lcd-black/) · [화이트](https://www.thermalright.com/product/trofeo-vision-9-16-lcd-white/)
+  - 아마존: [Trofeo Vision 9.16 LCD Black](https://www.amazon.com/dp/B0FX7SH64X)
+  - 테스트한 장치: ARGB가 없는 모델, USB VID `0x0416` / PID `0x5408`. ARGB 모델은 테스트하지 않았습니다.
+- **호스트:** NVIDIA Jetson AGX Xavier 16GB (JetPack 5.1.6 / L4T R35.6)
+
 ## 화면 구성
 
 | 패널 | 내용 | 출처 |

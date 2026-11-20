@@ -9,6 +9,14 @@ It is the Jetson counterpart of [MacTR](https://github.com/beret21/MacTR), the m
 
 ![preview](img/preview.png)
 
+## Hardware
+
+- **Display:** Thermalright Trofeo Vision 9.16 LCD (9.16", 1920×480 IPS, USB Type-C, magnetic mount)
+  - Manufacturer: [Black](https://www.thermalright.com/product/trofeo-vision-9-16-lcd-black/) · [White](https://www.thermalright.com/product/trofeo-vision-9-16-lcd-white/)
+  - Amazon: [Trofeo Vision 9.16 LCD Black](https://www.amazon.com/dp/B0FX7SH64X)
+  - Tested unit: non-ARGB model, USB VID `0x0416` / PID `0x5408`. The ARGB variants were not tested.
+- **Host:** NVIDIA Jetson AGX Xavier 16GB (JetPack 5.1.6 / L4T R35.6)
+
 ## Panels
 
 | Panel | Content | Source |
