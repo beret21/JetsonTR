@@ -1,5 +1,7 @@
 # JetsonTR
 
+**English** | [한국어](README.ko.md)
+
 **JetsonTR** turns a Thermalright Trofeo Vision 9.16" USB LCD (1920×480) into a system monitor for the **NVIDIA Jetson AGX Xavier**.
 It drives the display directly over raw USB bulk transfers. You don't need a vendor driver.
 
