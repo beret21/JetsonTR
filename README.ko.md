@@ -91,4 +91,4 @@ journalctl -u thermalright-lcd -f
 ## 라이선스
 
 MIT. [LICENSE](LICENSE)를 참고하세요.
-LY 프로토콜은 프로토콜 설명 문서(MacTR의 DISPLAY_PROTOCOL.md)만 보고 독립적으로 구현했습니다. 이 문서는 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)의 역공학 결과를 바탕으로 합니다. 문서에는 thermalright-trcc-linux 코드가 들어 있지 않으며, 이 저장소에도 그 프로젝트의 코드는 포함되어 있지 않습니다. 출처는 예의상 밝혀 둡니다.
+LY 프로토콜은 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)가 역공학으로 밝힌 프로토콜을 바탕으로 독립적으로 구현했습니다. 이 저장소에는 그 프로젝트의 코드가 포함되어 있지 않습니다. 출처는 예의상 밝혀 둡니다.
