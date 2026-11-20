@@ -31,14 +31,14 @@ const USAGE: &str = "usage: jetsontr [--png PATH] [--interval SECS] [--no-rotate
                 [--handshake-only] [--test SECS]
 
   --png PATH        render one frame to PNG and exit (no device needed)
-  --interval SECS   metric/render period, default 2
+  --interval SECS   metric/render period, default 1
   --no-rotate       do not rotate frames by 180 degrees
   --brightness F    RGB gain applied before sending, default 1.0
   --handshake-only  query the panel and exit
   --test SECS       show a color test pattern for SECS seconds";
 
 fn parse_args() -> Options {
-    let mut o = Options { png: None, interval: Duration::from_secs(2), rotate: true, brightness: 1.0, handshake_only: false, test_secs: None };
+    let mut o = Options { png: None, interval: Duration::from_secs(1), rotate: true, brightness: 1.0, handshake_only: false, test_secs: None };
     let mut args = std::env::args().skip(1);
     let need = |v: Option<String>, flag: &str| -> String {
         v.unwrap_or_else(|| {
@@ -49,7 +49,7 @@ fn parse_args() -> Options {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--png" => o.png = Some(need(args.next(), &a)),
-            "--interval" => o.interval = Duration::from_secs_f64(need(args.next(), &a).parse().unwrap_or(2.0f64).max(0.5)),
+            "--interval" => o.interval = Duration::from_secs_f64(need(args.next(), &a).parse().unwrap_or(1.0f64).max(0.5)),
             "--no-rotate" => o.rotate = false,
             "--brightness" => o.brightness = need(args.next(), &a).parse().unwrap_or(1.0),
             "--handshake-only" => o.handshake_only = true,
@@ -156,11 +156,19 @@ fn main() {
         thread::spawn(move || loop {
             let t0 = Instant::now();
             let snap = latest.lock().unwrap().clone();
-            if let Some(s) = snap {
+            if let Some(mut s) = snap {
+                // The clock shows render time, not sample time, so it ticks evenly.
+                s.time = chrono::Local::now();
                 let jpeg = frame_jpeg(&render::render(&fonts, &s), &opts);
                 *frame.lock().unwrap() = Some(Arc::new(jpeg));
             }
-            thread::sleep(opts.interval.saturating_sub(t0.elapsed()).max(Duration::from_millis(100)));
+            if opts.interval == Duration::from_secs(1) {
+                // Align to the next wall-clock second (+20 ms margin).
+                let ms = chrono::Timelike::nanosecond(&chrono::Local::now()) / 1_000_000;
+                thread::sleep(Duration::from_millis((1000 - ms.min(999) as u64) + 20));
+            } else {
+                thread::sleep(opts.interval.saturating_sub(t0.elapsed()).max(Duration::from_millis(100)));
+            }
         });
     }
 

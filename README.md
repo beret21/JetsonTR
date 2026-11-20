@@ -63,7 +63,7 @@ sudo jetsontr --no-rotate --brightness 1.6
 
 | Option | Description |
 |---|---|
-| `--interval SECS` | Metric collection and render period (default 2) |
+| `--interval SECS` | Metric collection and render period (default 1) |
 | `--no-rotate` | Do not rotate the frame by 180° (pick whichever matches how your LCD is mounted) |
 | `--brightness F` | RGB gain applied before sending (default 1.0) |
 | `--png PATH` | Save a single PNG and exit, without a device |
@@ -86,7 +86,7 @@ journalctl -u thermalright-lcd -f
 
 ## How it works
 
-- **Threads:** a collector thread and a renderer thread each run every 2 s. The main loop re-sends the cached JPEG every 0.5 s, because the LCD blanks when frames stop arriving.
+- **Threads:** a collector thread and a renderer thread each run every second. The main loop re-sends the cached JPEG every 0.5 s, because the LCD blanks when frames stop arriving.
 - **Protocol (LY)**
   - Handshake: send 2048 B, read a 512 B reply, and derive PM/SUB/FBL from it. This unit reports PM=65, FBL=192, 1920×480.
   - Frames: the JPEG (≤ 650 KB) is split into 512 B packets of a 16 B header plus up to 496 B of data. The packet count is the ceiling of size/496, padded to a multiple of 4. Packets go out over bulk OUT (0x09) in transfers of up to 4096 B, then a 512 B ACK is read from bulk IN (0x81).
