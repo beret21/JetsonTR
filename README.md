@@ -58,17 +58,23 @@ jetsontr --handshake-only
 jetsontr --test 10
 
 # Drive the LCD (power rails are readable only as root)
-sudo jetsontr --no-rotate --brightness 1.6
+sudo jetsontr --rotate 0
 ```
 
 | Option | Description |
 |---|---|
-| `--interval SECS` | Metric collection and render period (default 1) |
-| `--no-rotate` | Do not rotate the frame by 180° (pick whichever matches how your LCD is mounted) |
-| `--brightness F` | RGB gain applied before sending (default 1.0) |
+| `--rotate DEG` | `0` or `180` (default `180`). Use whichever makes the image upright on your unit |
+| `--no-rotate` | Same as `--rotate 0` |
+| `--brightness F` | RGB gain applied before sending, 0.1 to 5.0 (default 1.3) |
+| `--fast SECS` | Refresh period for CPU, GPU, EMC, power, memory, network, disk I/O (default 1) |
+| `--slow SECS` | Refresh period for temperatures, fan, zram, task count (default 5) |
+| `--fixed SECS` | Refresh period for power mode (nvpmodel) and disk usage (default 60) |
 | `--png PATH` | Save a single PNG and exit, without a device |
 | `--handshake-only` | Query the panel and print PM/SUB/FBL |
 | `--test SECS` | Show a color test pattern |
+
+All settings are command-line flags; anything not given uses its default. The screen redraws once per wall-clock second regardless of the refresh periods.
+To change the settings of the service, run `sudo systemctl edit --full thermalright-lcd`, edit `ExecStart`, and save.
 
 ### Run as a service (systemd)
 
@@ -86,7 +92,7 @@ journalctl -u thermalright-lcd -f
 
 ## How it works
 
-- **Threads:** a collector thread and a renderer thread each run every second. The main loop re-sends the cached JPEG every 0.5 s, because the LCD blanks when frames stop arriving.
+- **Threads:** the collector refreshes metrics in three tiers (fast / slow / fixed), and the renderer redraws once per wall-clock second. The main loop re-sends the cached JPEG every 0.5 s, because the LCD blanks when frames stop arriving.
 - **Protocol (LY)**
   - Handshake: send 2048 B, read a 512 B reply, and derive PM/SUB/FBL from it. This unit reports PM=65, FBL=192, 1920×480.
   - Frames: the JPEG (≤ 650 KB) is split into 512 B packets of a 16 B header plus up to 496 B of data. The packet count is the ceiling of size/496, padded to a multiple of 4. Packets go out over bulk OUT (0x09) in transfers of up to 4096 B, then a 512 B ACK is read from bulk IN (0x81).

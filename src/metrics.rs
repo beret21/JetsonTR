@@ -288,8 +288,40 @@ fn hwmon_value(name: &str, file: &str) -> Option<u32> {
     None
 }
 
+/// How often each group of metrics is refreshed.
+#[derive(Clone, Copy)]
+pub struct Intervals {
+    /// CPU, GPU, EMC, power rails, memory, network, disk I/O.
+    pub fast: Duration,
+    /// Temperatures, fan, zram, task count.
+    pub slow: Duration,
+    /// Power mode (nvpmodel) and disk usage.
+    pub fixed: Duration,
+}
+
+#[derive(Clone, Default)]
+struct SlowValues {
+    tasks: usize,
+    temps: Vec<(&'static str, Option<f64>)>,
+    zram: u64,
+    fan_rpm: Option<u32>,
+    fan_pwm: Option<u32>,
+}
+
+#[derive(Clone, Default)]
+struct FixedValues {
+    power_mode: String,
+    disk_total: u64,
+    disk_used: u64,
+}
+
+fn due(at: Option<Instant>, every: Duration) -> bool {
+    // Small slack so a 5 s group sampled by a 1 s loop does not slip to 6 s.
+    at.is_none_or(|t| t.elapsed() + Duration::from_millis(100) >= every)
+}
+
 pub struct Collector {
-    interval: Duration,
+    iv: Intervals,
     tegra: Arc<Mutex<Tegra>>,
     prev: Option<Counters>,
     hist: [VecDeque<f64>; 6],
@@ -297,15 +329,17 @@ pub struct Collector {
     cpu_max_mhz: u32,
     gpu_max_mhz: u32,
     thermal: Vec<(&'static str, Option<String>)>,
-    power_mode: String,
-    power_mode_at: Option<Instant>,
+    slow: SlowValues,
+    slow_at: Option<Instant>,
+    fixed: FixedValues,
+    fixed_at: Option<Instant>,
     hostname: String,
 }
 
 impl Collector {
-    pub fn new(interval: Duration) -> Collector {
+    pub fn new(iv: Intervals) -> Collector {
         let tegra = Arc::new(Mutex::new(Tegra::default()));
-        spawn_tegrastats(interval.as_millis() as u64, tegra.clone());
+        spawn_tegrastats(iv.fast.as_millis() as u64, tegra.clone());
         let ncpu = (0..).take_while(|i| fs::metadata(format!("/sys/devices/system/cpu/cpu{}", i)).is_ok()).count();
         let cluster = (0..ncpu)
             .map(|i| read_u64(&format!("/sys/devices/system/cpu/cpu{}/topology/physical_package_id", i)).unwrap_or(0) as u32)
@@ -324,7 +358,7 @@ impl Collector {
             .map(|(label, zone)| (*label, zones.iter().find(|(t, _)| t == zone).map(|(_, p)| p.clone())))
             .collect();
         Collector {
-            interval,
+            iv,
             tegra,
             prev: None,
             hist: Default::default(),
@@ -332,22 +366,59 @@ impl Collector {
             cpu_max_mhz: (read_u64("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq").unwrap_or(0) / 1000) as u32,
             gpu_max_mhz: (read_u64(&format!("{}/devfreq/17000000.gv11b/max_freq", GPU_DEV)).unwrap_or(0) / 1_000_000) as u32,
             thermal,
-            power_mode: "?".into(),
-            power_mode_at: None,
+            slow: SlowValues::default(),
+            slow_at: None,
+            fixed: FixedValues { power_mode: "?".into(), ..Default::default() },
+            fixed_at: None,
             hostname: read("/proc/sys/kernel/hostname").unwrap_or_default(),
         }
     }
 
-    fn power_mode(&mut self) -> String {
-        if self.power_mode_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
-            self.power_mode_at = Some(Instant::now());
-            if let Some(out) = run_with_timeout("nvpmodel", &["-q"], Duration::from_secs(3)) {
-                if let Some(mode) = out.lines().find_map(|l| l.strip_prefix("NV Power Mode: ")) {
-                    self.power_mode = mode.trim().to_string();
+    fn refresh_slow(&mut self) {
+        if !due(self.slow_at, self.iv.slow) {
+            return;
+        }
+        self.slow_at = Some(Instant::now());
+        let tasks = fs::read_dir("/proc")
+            .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit())).count())
+            .unwrap_or(0);
+        let temps = self
+            .thermal
+            .iter()
+            .map(|(label, path)| (*label, path.as_deref().and_then(read_u64).map(|v| v as f64 / 1000.0)))
+            .collect();
+        let mut zram = 0;
+        if let Ok(rd) = fs::read_dir("/sys/block") {
+            for d in rd.flatten() {
+                if d.file_name().to_string_lossy().starts_with("zram") {
+                    if let Some(s) = read(&format!("{}/mm_stat", d.path().display())) {
+                        zram += s.split_whitespace().nth(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                    }
                 }
             }
         }
-        self.power_mode.clone()
+        self.slow = SlowValues {
+            tasks,
+            temps,
+            zram,
+            fan_rpm: hwmon_value("pwm_tach", "rpm"),
+            fan_pwm: hwmon_value("pwmfan", "pwm1").map(|p| p * 100 / 255),
+        };
+    }
+
+    fn refresh_fixed(&mut self) {
+        if !due(self.fixed_at, self.iv.fixed) {
+            return;
+        }
+        self.fixed_at = Some(Instant::now());
+        if let Some(out) = run_with_timeout("nvpmodel", &["-q"], Duration::from_secs(3)) {
+            if let Some(mode) = out.lines().find_map(|l| l.strip_prefix("NV Power Mode: ")) {
+                self.fixed.power_mode = mode.trim().to_string();
+            }
+        }
+        let (total, used) = statvfs_root();
+        self.fixed.disk_total = total;
+        self.fixed.disk_used = used;
     }
 
     /// Take one sample. Returns None on the first call (rates need two samples).
@@ -374,16 +445,8 @@ impl Collector {
         let load_s = read("/proc/loadavg").unwrap_or_default();
         let mut li = load_s.split_whitespace().map(String::from);
         let load = [li.next().unwrap_or_default(), li.next().unwrap_or_default(), li.next().unwrap_or_default()];
-        let tasks = fs::read_dir("/proc")
-            .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit())).count())
-            .unwrap_or(0);
-        let temps = self
-            .thermal
-            .iter()
-            .map(|(label, path)| (*label, path.as_deref().and_then(read_u64).map(|v| v as f64 / 1000.0)))
-            .collect();
 
-        let stale = self.interval * 3 + Duration::from_secs(2);
+        let stale = self.iv.fast * 3 + Duration::from_secs(2);
         let tg = {
             let t = self.tegra.lock().unwrap();
             if t.at.is_some_and(|a| a.elapsed() < stale) { t.clone() } else { Tegra::default() }
@@ -403,16 +466,6 @@ impl Collector {
         let mem_total = g("MemTotal").max(1);
         let mem_avail = g("MemAvailable");
         let cache = (g("Buffers") + g("Cached") + g("SReclaimable")).saturating_sub(g("Shmem"));
-        let mut zram = 0;
-        if let Ok(rd) = fs::read_dir("/sys/block") {
-            for d in rd.flatten() {
-                if d.file_name().to_string_lossy().starts_with("zram") {
-                    if let Some(s) = read(&format!("{}/mm_stat", d.path().display())) {
-                        zram += s.split_whitespace().nth(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-                    }
-                }
-            }
-        }
 
         let rate = |a: u64, b: u64| a.saturating_sub(b) as f64 / dt;
         let samples = [
@@ -433,7 +486,9 @@ impl Collector {
         let v = |i: usize| self.hist[i].iter().copied().collect::<Vec<_>>();
         let hist = History { rx: v(0), tx: v(1), disk_r: v(2), disk_w: v(3), swap_in: v(4), swap_out: v(5) };
 
-        let (disk_total, disk_used) = statvfs_root();
+        self.refresh_slow();
+        self.refresh_fixed();
+        let (slow, fixed) = (self.slow.clone(), self.fixed.clone());
         Some(Snapshot {
             time: Local::now(),
             hostname: self.hostname.clone(),
@@ -443,9 +498,9 @@ impl Collector {
             cluster: self.cluster.clone(),
             cpu_max_mhz: self.cpu_max_mhz,
             load,
-            tasks,
+            tasks: slow.tasks,
             running,
-            temps,
+            temps: slow.temps,
             gpu,
             gpu_mhz: (read_u64(&format!("{}/devfreq/17000000.gv11b/cur_freq", GPU_DEV)).unwrap_or(0) / 1_000_000) as u32,
             gpu_max_mhz: self.gpu_max_mhz,
@@ -455,15 +510,15 @@ impl Collector {
             mem_used: mem_total.saturating_sub(mem_avail),
             mem_avail,
             mem_cache: cache,
-            zram,
+            zram: slow.zram,
             swap_total: g("SwapTotal"),
             swap_used: g("SwapTotal").saturating_sub(g("SwapFree")),
-            disk_total,
-            disk_used,
+            disk_total: fixed.disk_total,
+            disk_used: fixed.disk_used,
             rails: if tg.rails.is_empty() { None } else { Some(tg.rails) },
-            fan_rpm: hwmon_value("pwm_tach", "rpm"),
-            fan_pwm: hwmon_value("pwmfan", "pwm1").map(|p| p * 100 / 255),
-            power_mode: self.power_mode(),
+            fan_rpm: slow.fan_rpm,
+            fan_pwm: slow.fan_pwm,
+            power_mode: fixed.power_mode,
             uptime: read("/proc/uptime").and_then(|s| s.split_whitespace().next()?.parse().ok()).unwrap_or(0.0),
             hist,
         })

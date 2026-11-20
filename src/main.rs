@@ -1,10 +1,12 @@
 //! JetsonTR: Jetson AGX Xavier system monitor on a Thermalright Trofeo Vision LCD.
 //!
 //! Threads:
-//! * collector: samples metrics every `--interval` seconds
-//! * renderer: draws the latest sample and caches the JPEG
+//! * collector: samples metrics in three tiers (fast / slow / fixed)
+//! * renderer: draws the latest sample once per wall-clock second and caches the JPEG
 //! * main: re-sends the cached JPEG every 0.5 s (the panel blanks when frames
 //!   stop) and reconnects after errors
+//!
+//! All settings come from command-line flags; anything not given uses the default.
 
 mod lcd;
 mod metrics;
@@ -15,53 +17,92 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use metrics::Intervals;
+
 const RESEND: Duration = Duration::from_millis(500);
 const RECONNECT: Duration = Duration::from_secs(5);
+const REFRESH: Duration = Duration::from_secs(1);
 
+#[derive(Clone)]
 struct Options {
     png: Option<String>,
-    interval: Duration,
+    intervals: Intervals,
     rotate: bool,
     brightness: f32,
     handshake_only: bool,
     test_secs: Option<u64>,
 }
 
-const USAGE: &str = "usage: jetsontr [--png PATH] [--interval SECS] [--no-rotate] [--brightness F]
-                [--handshake-only] [--test SECS]
+const USAGE: &str = "usage: jetsontr [OPTIONS]
 
-  --png PATH        render one frame to PNG and exit (no device needed)
-  --interval SECS   metric/render period, default 1
-  --no-rotate       do not rotate frames by 180 degrees
-  --brightness F    RGB gain applied before sending, default 1.0
-  --handshake-only  query the panel and exit
-  --test SECS       show a color test pattern for SECS seconds";
+Display:
+  --rotate DEG       0 or 180 (default 180)
+  --no-rotate        same as --rotate 0
+  --brightness F     RGB gain applied before sending (default 1.3)
+
+Metric refresh (seconds; the screen itself redraws every second):
+  --fast SECS        CPU, GPU, EMC, power, memory, network, disk I/O (default 1)
+  --slow SECS        temperatures, fan, zram, task count (default 5)
+  --fixed SECS       power mode (nvpmodel), disk usage (default 60)
+
+Other modes:
+  --png PATH         render one frame to PNG and exit (no device needed)
+  --handshake-only   query the panel and exit
+  --test SECS        show a color test pattern for SECS seconds
+  -h, --help         show this help";
 
 fn parse_args() -> Options {
-    let mut o = Options { png: None, interval: Duration::from_secs(1), rotate: true, brightness: 1.0, handshake_only: false, test_secs: None };
-    let mut args = std::env::args().skip(1);
-    let need = |v: Option<String>, flag: &str| -> String {
-        v.unwrap_or_else(|| {
-            eprintln!("{} needs a value\n{}", flag, USAGE);
-            exit(2)
-        })
+    let mut o = Options {
+        png: None,
+        intervals: Intervals { fast: Duration::from_secs(1), slow: Duration::from_secs(5), fixed: Duration::from_secs(60) },
+        rotate: true,
+        brightness: 1.3,
+        handshake_only: false,
+        test_secs: None,
     };
-    while let Some(a) = args.next() {
+    let fail = |msg: String| -> ! {
+        eprintln!("{}\n\n{}", msg, USAGE);
+        exit(2)
+    };
+    let secs = |flag: &str, v: String| -> Duration {
+        match v.parse::<f64>() {
+            Ok(s) if (0.5..=3600.0).contains(&s) => Duration::from_secs_f64(s),
+            _ => fail(format!("{}: expected seconds between 0.5 and 3600, got {:?}", flag, v)),
+        }
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        let mut val = || it.next().unwrap_or_else(|| fail(format!("{} needs a value", a)));
         match a.as_str() {
-            "--png" => o.png = Some(need(args.next(), &a)),
-            "--interval" => o.interval = Duration::from_secs_f64(need(args.next(), &a).parse().unwrap_or(1.0f64).max(0.5)),
+            "--rotate" => {
+                o.rotate = match val().as_str() {
+                    "0" => false,
+                    "180" => true,
+                    v => fail(format!("--rotate: expected 0 or 180, got {:?}", v)),
+                }
+            }
             "--no-rotate" => o.rotate = false,
-            "--brightness" => o.brightness = need(args.next(), &a).parse().unwrap_or(1.0),
+            "--brightness" => {
+                let v = val();
+                o.brightness = match v.parse::<f32>() {
+                    Ok(b) if (0.1..=5.0).contains(&b) => b,
+                    _ => fail(format!("--brightness: expected 0.1 to 5.0, got {:?}", v)),
+                }
+            }
+            "--fast" | "--interval" => o.intervals.fast = secs(&a, val()),
+            "--slow" => o.intervals.slow = secs(&a, val()),
+            "--fixed" => o.intervals.fixed = secs(&a, val()),
+            "--png" => o.png = Some(val()),
             "--handshake-only" => o.handshake_only = true,
-            "--test" => o.test_secs = Some(need(args.next(), &a).parse().unwrap_or(10)),
+            "--test" => {
+                let v = val();
+                o.test_secs = Some(v.parse().unwrap_or_else(|_| fail(format!("--test: expected seconds, got {:?}", v))))
+            }
             "-h" | "--help" => {
                 println!("{}", USAGE);
                 exit(0)
             }
-            other => {
-                eprintln!("unknown option {}\n{}", other, USAGE);
-                exit(2)
-            }
+            other => fail(format!("unknown option {}", other)),
         }
     }
     o
@@ -109,11 +150,11 @@ fn main() {
     }
 
     if let Some(path) = &o.png {
-        let mut col = metrics::Collector::new(o.interval);
+        let mut col = metrics::Collector::new(o.intervals);
         let mut snap = None;
         for _ in 0..4 {
             snap = col.sample().or(snap);
-            thread::sleep(o.interval);
+            thread::sleep(o.intervals.fast);
         }
         let snap = col.sample().or(snap).expect("no metrics");
         let t0 = Instant::now();
@@ -130,31 +171,33 @@ fn main() {
         return;
     }
 
+    let iv = o.intervals;
+    println!("[OK] jetsontr rotate={} brightness={} fast={:?} slow={:?} fixed={:?}",
+        if o.rotate { 180 } else { 0 }, o.brightness, iv.fast, iv.slow, iv.fixed);
+
     // Collector thread -> latest snapshot.
     let latest: Arc<Mutex<Option<metrics::Snapshot>>> = Arc::new(Mutex::new(None));
     {
         let latest = latest.clone();
-        let interval = o.interval;
         thread::spawn(move || {
-            let mut col = metrics::Collector::new(interval);
+            let mut col = metrics::Collector::new(iv);
             loop {
                 let t0 = Instant::now();
                 if let Some(s) = col.sample() {
                     *latest.lock().unwrap() = Some(s);
                 }
-                thread::sleep(interval.saturating_sub(t0.elapsed()));
+                thread::sleep(iv.fast.saturating_sub(t0.elapsed()));
             }
         });
     }
 
-    // Renderer thread -> cached JPEG.
+    // Renderer thread -> cached JPEG, once per wall-clock second.
     let frame: Arc<Mutex<Option<Arc<Vec<u8>>>>> = Arc::new(Mutex::new(None));
     {
         let frame = frame.clone();
         let latest = latest.clone();
-        let opts = Options { png: None, interval: o.interval, rotate: o.rotate, brightness: o.brightness, handshake_only: false, test_secs: None };
+        let opts = o.clone();
         thread::spawn(move || loop {
-            let t0 = Instant::now();
             let snap = latest.lock().unwrap().clone();
             if let Some(mut s) = snap {
                 // The clock shows render time, not sample time, so it ticks evenly.
@@ -162,13 +205,10 @@ fn main() {
                 let jpeg = frame_jpeg(&render::render(&fonts, &s), &opts);
                 *frame.lock().unwrap() = Some(Arc::new(jpeg));
             }
-            if opts.interval == Duration::from_secs(1) {
-                // Align to the next wall-clock second (+20 ms margin).
-                let ms = chrono::Timelike::nanosecond(&chrono::Local::now()) / 1_000_000;
-                thread::sleep(Duration::from_millis((1000 - ms.min(999) as u64) + 20));
-            } else {
-                thread::sleep(opts.interval.saturating_sub(t0.elapsed()).max(Duration::from_millis(100)));
-            }
+            // Wake just after the next second boundary (+20 ms margin).
+            let ms = chrono::Timelike::nanosecond(&chrono::Local::now()) / 1_000_000;
+            let wait = REFRESH.as_millis() as u64 - (ms.min(999) as u64) + 20;
+            thread::sleep(Duration::from_millis(wait));
         });
     }
 

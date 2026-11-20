@@ -58,17 +58,23 @@ jetsontr --handshake-only
 jetsontr --test 10
 
 # LCD 구동 (전력 레일 값은 root에서만 읽힘)
-sudo jetsontr --no-rotate --brightness 1.6
+sudo jetsontr --rotate 0
 ```
 
 | 옵션 | 설명 |
 |---|---|
-| `--interval SECS` | 메트릭 수집과 렌더 주기, 기본값 1 |
-| `--no-rotate` | 프레임을 180° 회전하지 않음 (LCD 장착 방향에 맞게 선택) |
-| `--brightness F` | 보내기 전에 RGB에 곱하는 밝기 배율, 기본값 1.0 |
+| `--rotate DEG` | `0` 또는 `180` (기본값 `180`). 장치에서 화면이 바로 보이는 쪽을 고르세요 |
+| `--no-rotate` | `--rotate 0`과 같음 |
+| `--brightness F` | 보내기 전에 RGB에 곱하는 밝기 배율, 0.1~5.0 (기본값 1.3) |
+| `--fast SECS` | CPU, GPU, EMC, 전력, 메모리, 네트워크, 디스크 I/O 갱신 주기 (기본값 1) |
+| `--slow SECS` | 온도, 팬, zram, 프로세스 수 갱신 주기 (기본값 5) |
+| `--fixed SECS` | 전원 모드(nvpmodel), 디스크 사용량 갱신 주기 (기본값 60) |
 | `--png PATH` | 장치 없이 PNG 한 장을 저장하고 종료 |
 | `--handshake-only` | 패널을 조회해 PM/SUB/FBL 출력 |
 | `--test SECS` | 컬러 테스트 화면 표시 |
+
+모든 설정은 명령행 인수로 받고, 주지 않은 값은 기본값을 씁니다. 화면은 갱신 주기와 상관없이 매초 정각에 다시 그립니다.
+서비스 설정을 바꾸려면 `sudo systemctl edit --full thermalright-lcd`로 `ExecStart`를 고치고 저장하세요.
 
 ### 서비스로 상시 실행 (systemd)
 
@@ -86,7 +92,7 @@ journalctl -u thermalright-lcd -f
 
 ## 동작 방식
 
-- **스레드:** 수집 스레드와 렌더 스레드가 각각 1초마다 동작합니다. 프레임이 끊기면 LCD가 꺼지기 때문에 메인 루프는 캐시된 JPEG를 0.5초마다 다시 보냅니다.
+- **스레드:** 수집 스레드는 빠름/느림/고정 세 단계 주기로 값을 갱신하고, 렌더 스레드는 매초 정각에 화면을 다시 그립니다. 프레임이 끊기면 LCD가 꺼지기 때문에 메인 루프는 캐시된 JPEG를 0.5초마다 다시 보냅니다.
 - **프로토콜 (LY)**
   - 핸드셰이크: 2048B를 보내고 512B 응답을 받아 PM/SUB/FBL을 얻습니다. 이 장치는 PM=65, FBL=192, 1920×480으로 응답합니다.
   - 프레임: JPEG(650KB 이하)를 16B 헤더와 최대 496B 데이터로 된 512B 패킷으로 나눕니다. 패킷 수는 크기/496을 올림한 값이고 4의 배수로 채웁니다. 패킷은 최대 4096B씩 bulk OUT(0x09)으로 보내고, bulk IN(0x81)에서 512B ACK를 읽습니다.
