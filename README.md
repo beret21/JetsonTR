@@ -91,4 +91,4 @@ journalctl -u thermalright-lcd -f
 ## License
 
 MIT. See [LICENSE](LICENSE).
-The protocol was implemented from the specification documented by thermalright-trcc-linux (GPL-3.0). This repository contains none of that project's code.
+The LY protocol was implemented independently from a protocol description (MacTR's DISPLAY_PROTOCOL.md), which is based on the reverse engineering done by [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux) (GPL-3.0). That description contains no code from thermalright-trcc-linux, and no code from that project is included here. The project is credited out of courtesy.
