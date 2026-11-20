@@ -90,6 +90,7 @@ journalctl -u thermalright-lcd -f
 - **Protocol (LY)**
   - Handshake: send 2048 B, read a 512 B reply, and derive PM/SUB/FBL from it. This unit reports PM=65, FBL=192, 1920×480.
   - Frames: the JPEG (≤ 650 KB) is split into 512 B packets of a 16 B header plus up to 496 B of data. The packet count is the ceiling of size/496, padded to a multiple of 4. Packets go out over bulk OUT (0x09) in transfers of up to 4096 B, then a 512 B ACK is read from bulk IN (0x81).
+  - The panel decodes baseline JPEG with 4:2:0 chroma subsampling; a 4:4:4 JPEG shows as a blank screen.
   - The first handshake after power-up may return `resp[8]=0x02` (not ready), so the handshake is retried.
 - **Recovery:** on a send failure or unplug, the device is closed and reopened after 5 s. `tegrastats` is restarted if it exits, and `nvpmodel` is called with a 3 s timeout.
 - **Code layout:** `src/lcd.rs` (USB protocol), `src/metrics.rs` (collection), `src/render.rs` (drawing with tiny-skia and ab_glyph, JPEG encoding), `src/main.rs` (threads and CLI).

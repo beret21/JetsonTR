@@ -517,7 +517,10 @@ pub fn encode_jpeg(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
     let mut q = 90u8;
     loop {
         let mut buf = Vec::new();
-        let enc = jpeg_encoder::Encoder::new(&mut buf, q);
+        let mut enc = jpeg_encoder::Encoder::new(&mut buf, q);
+        // The panel's decoder needs 4:2:0 chroma subsampling; jpeg-encoder
+        // switches to 4:4:4 at quality >= 90, which the panel shows as blank.
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2);
         enc.encode(rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).expect("jpeg encode");
         if buf.len() <= crate::lcd::MAX_JPEG || q <= 30 {
             return buf;
