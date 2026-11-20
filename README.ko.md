@@ -77,7 +77,7 @@ journalctl -u thermalright-lcd -f
 - **스레드:** 수집 스레드와 렌더 스레드가 각각 2초마다 동작합니다. 프레임이 끊기면 LCD가 꺼지기 때문에 메인 루프는 캐시된 JPEG를 0.5초마다 다시 보냅니다.
 - **프로토콜 (LY)**
   - 핸드셰이크: 2048B를 보내고 512B 응답을 받아 PM/SUB/FBL을 얻습니다. 이 장치는 PM=65, FBL=192, 1920×480으로 응답합니다.
-  - 프레임: JPEG(650KB 이하)를 16B 헤더와 496B 데이터로 된 512B 청크로 나눕니다. 청크는 4096B씩 bulk OUT(0x09)으로 보내고, bulk IN(0x81)에서 512B ACK를 읽습니다.
+  - 프레임: JPEG(650KB 이하)를 16B 헤더와 496B 데이터로 된 512B 청크로 나눕니다. 청크 수는 크기/496을 올림한 값이고 4의 배수로 채웁니다. 청크는 최대 4096B씩 bulk OUT(0x09)으로 보내고, bulk IN(0x81)에서 512B ACK를 읽습니다.
   - 전원을 켠 뒤 첫 핸드셰이크는 `resp[8]=0x02`(준비 안 됨)를 돌려줄 수 있어서 재시도합니다.
 - **복구:** 전송이 실패하거나 장치가 분리되면 장치를 닫고 5초 뒤 다시 엽니다. `tegrastats`가 종료되면 다시 시작합니다.
 - **성능:** 렌더링은 2배 슈퍼샘플링을 쓰며 Xavier에서 프레임당 약 290ms 걸립니다. JPEG 인코딩은 약 40ms 걸립니다.
@@ -91,4 +91,4 @@ journalctl -u thermalright-lcd -f
 ## 라이선스
 
 MIT. [LICENSE](LICENSE)를 참고하세요.
-LY 프로토콜은 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)가 역공학으로 밝힌 프로토콜을 바탕으로 독립적으로 구현했습니다. 이 저장소에는 그 프로젝트의 코드가 포함되어 있지 않습니다. 출처는 예의상 밝혀 둡니다.
+LY 프로토콜 정보(USB ID, 핸드셰이크, 청크 형식)는 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)를 참조했습니다. 구현은 직접 했고 구조도 다르며, 그 프로젝트의 코드나 C#에서 넘어온 관행은 가져오지 않았습니다. 이 저장소에는 그 프로젝트의 코드가 포함되어 있지 않습니다.

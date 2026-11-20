@@ -77,7 +77,7 @@ journalctl -u thermalright-lcd -f
 - **Threads:** a collector thread and a renderer thread each run every 2 s. The main loop re-sends the cached JPEG every 0.5 s, because the LCD blanks when frames stop arriving.
 - **Protocol (LY)**
   - Handshake: send 2048 B, read a 512 B reply, and derive PM/SUB/FBL from it. This unit reports PM=65, FBL=192, 1920×480.
-  - Frames: the JPEG (≤ 650 KB) is split into 512 B chunks of a 16 B header plus 496 B of data. Chunks go out over bulk OUT (0x09) in 4096 B writes, then a 512 B ACK is read from bulk IN (0x81).
+  - Frames: the JPEG (≤ 650 KB) is split into 512 B chunks of a 16 B header plus 496 B of data. The chunk count is the ceiling of size/496 and is padded to a multiple of 4. Chunks go out over bulk OUT (0x09) in writes of up to 4096 B, then a 512 B ACK is read from bulk IN (0x81).
   - The first handshake after power-up may return `resp[8]=0x02` (not ready), so the handshake is retried.
 - **Recovery:** on a send failure or unplug, the device is closed and reopened after 5 s. `tegrastats` is restarted if it exits.
 - **Performance:** rendering uses 2× supersampling and takes about 290 ms per frame on the Xavier. JPEG encoding takes about 40 ms.
@@ -91,4 +91,4 @@ journalctl -u thermalright-lcd -f
 ## License
 
 MIT. See [LICENSE](LICENSE).
-The LY protocol was implemented independently, based on the protocol reverse-engineered by [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux) (GPL-3.0). No code from that project is included here. The project is credited out of courtesy.
+The LY protocol details (USB IDs, handshake, chunk format) were referenced from [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux) (GPL-3.0). The implementation is our own, with its own structure, and does not carry over that project's code or its C#-derived quirks. No code from that project is included.

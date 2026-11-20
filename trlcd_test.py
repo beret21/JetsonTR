@@ -80,7 +80,9 @@ def encode_jpeg(img):
 
 def send_frame(dev, jpeg):
     total = len(jpeg)
-    n = total // CHUNK_DATA + 1
+    # Ceiling division: no empty trailing chunk when the size is an exact
+    # multiple of 496 (verified on hardware).
+    n = max(1, -(-total // CHUNK_DATA))
     chunks = []
     for i in range(n):
         part = jpeg[i * CHUNK_DATA:(i + 1) * CHUNK_DATA]
@@ -89,9 +91,10 @@ def send_frame(dev, jpeg):
     while len(chunks) % 4:
         chunks.append(bytes(512))
     payload = b"".join(chunks)
+    # Write in transfers of up to 4096 bytes and advance by what was written.
     off = 0
     while off < len(payload):
-        step = 4096 if len(payload) - off >= 4096 else 2048
+        step = min(4096, len(payload) - off)
         dev.write(EP_OUT, payload[off:off + step], 5000)
         off += step
     dev.read(EP_IN, 512, 1000)
