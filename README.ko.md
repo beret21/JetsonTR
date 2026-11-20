@@ -30,33 +30,45 @@ macOS 버전인 [MacTR](https://github.com/beret21/MacTR)의 Jetson판입니다.
 ## 요구 사항
 
 - Jetson AGX Xavier, JetPack 5.x(L4T R35)에서 테스트했습니다. 다른 Jetson 모델은 sysfs 경로가 다를 수 있습니다.
-- Python 3.8+, `pyusb`, `Pillow`, `libusb-1.0`
-- 글꼴: DejaVu Sans (`fonts-dejavu-core`)
+- 빌드에 Rust 툴체인(stable)과 `libusb-1.0` 개발 파일이 필요합니다.
+- 글꼴: DejaVu Sans (`fonts-dejavu-core`), 실행할 때 읽어 들입니다.
 
 ```bash
-sudo apt install python3-usb python3-pil libusb-1.0-0 fonts-dejavu-core
+sudo apt install libusb-1.0-0-dev pkg-config fonts-dejavu-core
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust가 없을 때
 ```
+
+## 빌드
+
+```bash
+cargo build --release
+sudo install -m 755 target/release/jetsontr /usr/local/bin/jetsontr
+```
+
+결과물은 약 1MB짜리 실행 파일 하나이며, libusb 말고는 실행에 필요한 것이 없습니다.
 
 ## 사용법
 
 ```bash
 # 장치 없이 한 프레임을 PNG로 렌더링
-python3 jetson_lcd_monitor.py --png img/preview.png
+jetsontr --png img/preview.png
 
-# 핸드셰이크만 실행 / 10초 컬러 테스트 화면
-python3 trlcd_test.py --handshake-only
-python3 trlcd_test.py --seconds 10
+# 패널 정보 조회 / 10초 컬러 테스트 화면
+jetsontr --handshake-only
+jetsontr --test 10
 
 # LCD 구동 (전력 레일 값은 root에서만 읽힘)
-sudo python3 jetson_lcd_monitor.py --no-rotate --brightness 1.6
+sudo jetsontr --no-rotate --brightness 1.6
 ```
 
 | 옵션 | 설명 |
 |---|---|
-| `--interval N` | 메트릭 수집과 렌더 주기(초), 기본값 2 |
+| `--interval SECS` | 메트릭 수집과 렌더 주기, 기본값 2 |
 | `--no-rotate` | 프레임을 180° 회전하지 않음 (LCD 장착 방향에 맞게 선택) |
 | `--brightness F` | 보내기 전에 RGB에 곱하는 밝기 배율, 기본값 1.0 |
 | `--png PATH` | 장치 없이 PNG 한 장을 저장하고 종료 |
+| `--handshake-only` | 패널을 조회해 PM/SUB/FBL 출력 |
+| `--test SECS` | 컬러 테스트 화면 표시 |
 
 ### 서비스로 상시 실행 (systemd)
 
@@ -65,7 +77,7 @@ sudo python3 jetson_lcd_monitor.py --no-rotate --brightness 1.6
 sudo cp udev/99-thermalright.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 
-# 서비스 설치. 먼저 경로와 PYTHONPATH를 환경에 맞게 고치세요.
+# 서비스 설치 (전력 레일을 읽기 위해 root로 실행)
 sudo cp systemd/thermalright-lcd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now thermalright-lcd
@@ -77,18 +89,26 @@ journalctl -u thermalright-lcd -f
 - **스레드:** 수집 스레드와 렌더 스레드가 각각 2초마다 동작합니다. 프레임이 끊기면 LCD가 꺼지기 때문에 메인 루프는 캐시된 JPEG를 0.5초마다 다시 보냅니다.
 - **프로토콜 (LY)**
   - 핸드셰이크: 2048B를 보내고 512B 응답을 받아 PM/SUB/FBL을 얻습니다. 이 장치는 PM=65, FBL=192, 1920×480으로 응답합니다.
-  - 프레임: JPEG(650KB 이하)를 16B 헤더와 496B 데이터로 된 512B 청크로 나눕니다. 청크 수는 크기/496을 올림한 값이고 4의 배수로 채웁니다. 청크는 최대 4096B씩 bulk OUT(0x09)으로 보내고, bulk IN(0x81)에서 512B ACK를 읽습니다.
+  - 프레임: JPEG(650KB 이하)를 16B 헤더와 최대 496B 데이터로 된 512B 패킷으로 나눕니다. 패킷 수는 크기/496을 올림한 값이고 4의 배수로 채웁니다. 패킷은 최대 4096B씩 bulk OUT(0x09)으로 보내고, bulk IN(0x81)에서 512B ACK를 읽습니다.
   - 전원을 켠 뒤 첫 핸드셰이크는 `resp[8]=0x02`(준비 안 됨)를 돌려줄 수 있어서 재시도합니다.
-- **복구:** 전송이 실패하거나 장치가 분리되면 장치를 닫고 5초 뒤 다시 엽니다. `tegrastats`가 종료되면 다시 시작합니다.
-- **성능:** 렌더링은 2배 슈퍼샘플링을 쓰며 Xavier에서 프레임당 약 290ms 걸립니다. JPEG 인코딩은 약 40ms 걸립니다.
+- **복구:** 전송이 실패하거나 장치가 분리되면 장치를 닫고 5초 뒤 다시 엽니다. `tegrastats`가 종료되면 다시 시작하고, `nvpmodel`은 3초 타임아웃을 걸어 호출합니다.
+- **코드 구성:** `src/lcd.rs`(USB 프로토콜), `src/metrics.rs`(수집), `src/render.rs`(tiny-skia·ab_glyph로 그리기, JPEG 인코딩), `src/main.rs`(스레드와 명령행).
+
+### 성능 (Jetson AGX Xavier, MAXN)
+
+| | Python 시제품 | Rust |
+|---|---|---|
+| 프레임 렌더 | 약 290ms | 약 40ms |
+| CPU (서비스, 코어 1개 기준) | 약 13% | 약 3% |
+| 메모리 (RSS) | 약 72MB | 약 13MB |
 
 ## 감사의 말
 
-- [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux): LY bulk 프로토콜 역공학 (`src/trcc/adapters/device/ly.py`)
+- [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux): LY bulk 프로토콜 역공학 
 - [MacTR](https://github.com/beret21/MacTR): 이 화면 레이아웃의 바탕이 된 macOS 버전
 - [Claude Code](https://claude.com/claude-code)로 만들었습니다. Mac 세션과 Jetson 세션이 세션 간 메시지로 프로토콜 문서와 화면 사양을 주고받았습니다.
 
 ## 라이선스
 
 MIT. [LICENSE](LICENSE)를 참고하세요.
-LY 프로토콜 정보(USB ID, 핸드셰이크, 청크 형식)는 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)를 참조했습니다. 구현은 직접 했고 구조도 다르며, 그 프로젝트의 코드나 C#에서 넘어온 관행은 가져오지 않았습니다. 이 저장소에는 그 프로젝트의 코드가 포함되어 있지 않습니다.
+LY 프로토콜 정보(USB ID, 핸드셰이크, 패킷 형식)는 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)(GPL-3.0)를 참조했습니다. 구현은 직접 했습니다. Rust로 작성했고 구조도 다르며, 그 프로젝트의 코드나 C#에서 넘어온 관행은 가져오지 않았습니다. 이 저장소에는 그 프로젝트의 코드가 포함되어 있지 않습니다.
