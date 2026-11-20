@@ -1,0 +1,15 @@
+[Unit]
+Description=Thermalright LCD system monitor (Jetson)
+After=multi-user.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/beret21/Workspace/thermalright
+Environment=PYTHONPATH=/home/beret21/.local/lib/python3.8/site-packages
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/beret21/Workspace/thermalright/jetson_lcd_monitor.py --no-rotate --brightness 1.6
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
