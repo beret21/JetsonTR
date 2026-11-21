@@ -95,6 +95,8 @@ impl Fonts {
     }
 }
 
+const PANELS: [(&str, Rgb); 5] = [("CPU", BLUE), ("GPU", MAGENTA), ("MEMORY", LIME), ("POWER", AMBER), ("SYSTEM", CYAN)];
+
 struct Canvas<'a> {
     pm: Pixmap,
     fonts: &'a Fonts,
@@ -284,9 +286,14 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn panel(&mut self, i: usize, title: &str, accent: Rgb, right: &str) -> (f32, f32) {
-        let x = 14.0 + i as f32 * 380.0;
-        let y = 14.0;
+    fn panel_origin(i: usize) -> (f32, f32) {
+        (14.0 + i as f32 * 380.0, 14.0)
+    }
+
+    /// Static part of a panel: frame, accent rim and title. Drawn once into the base layer.
+    fn panel_frame(&mut self, i: usize) {
+        let (title, accent) = PANELS[i];
+        let (x, y) = Self::panel_origin(i);
         // accent rim: the panel is drawn 3 px lower over an accent-coloured shape
         self.rrect(x, y, 370.0, 40.0, 16.0, accent);
         self.rrect(x, y + 3.0, 370.0, 449.0, 16.0, PANEL);
@@ -296,6 +303,11 @@ impl<'a> Canvas<'a> {
             self.hline(x + 16.0, y + 3.0 + k as f32, 338.0, mix(PANEL, accent, a));
         }
         self.text(x + 20.0, y + 14.0, title, 24.0, accent, true, Left);
+    }
+
+    /// Per-frame part of a panel header: the right-hand caption.
+    fn panel(&mut self, i: usize, right: &str) -> (f32, f32) {
+        let (x, y) = Self::panel_origin(i);
         if !right.is_empty() {
             self.text(x + 350.0, y + 20.0, right, 18.0, DIM, false, Right);
         }
@@ -308,7 +320,7 @@ fn last(v: &[f64]) -> f64 {
 }
 
 fn draw_cpu(c: &mut Canvas, s: &Snapshot) {
-    let (x, y) = c.panel(0, "CPU", BLUE, &format!("Carmel x{}", s.cpu.len()));
+    let (x, y) = c.panel(0, &format!("Carmel x{}", s.cpu.len()));
     let (col, dark) = status(s.cpu_avg, 50.0, 75.0);
     c.gauge(x + 100.0, y + 138.0, s.cpu_avg, col, dark, None, "%");
     let (rx, rw) = (x + 194.0, 152.0);
@@ -336,7 +348,7 @@ fn draw_cpu(c: &mut Canvas, s: &Snapshot) {
 }
 
 fn draw_gpu(c: &mut Canvas, s: &Snapshot) {
-    let (x, y) = c.panel(1, "GPU", MAGENTA, "Volta 512 CUDA");
+    let (x, y) = c.panel(1, "Volta 512 CUDA");
     c.gauge(x + 100.0, y + 138.0, s.gpu, MAGENTA, MAGENTA_D, None, "%");
     let (rx, rw) = (x + 194.0, 152.0);
     c.text(rx, y + 60.0, "Utilization", 18.0, LABEL, true, Left);
@@ -370,7 +382,7 @@ fn draw_gpu(c: &mut Canvas, s: &Snapshot) {
 }
 
 fn draw_memory(c: &mut Canvas, s: &Snapshot) {
-    let (x, y) = c.panel(2, "MEMORY", LIME, &format!("{:.1} GB unified", gb(s.mem_total)));
+    let (x, y) = c.panel(2, &format!("{:.1} GB unified", gb(s.mem_total)));
     let pct = 100.0 * s.mem_used as f64 / s.mem_total as f64;
     let avail_pct = 100.0 * s.mem_avail as f64 / s.mem_total as f64;
     let (col, dark) = if avail_pct > 25.0 {
@@ -411,7 +423,7 @@ fn rail_color(name: &str) -> Rgb {
 }
 
 fn draw_power(c: &mut Canvas, s: &Snapshot) {
-    let (x, y) = c.panel(3, "POWER", AMBER, &format!("nvpmodel {}", s.power_mode));
+    let (x, y) = c.panel(3, &format!("nvpmodel {}", s.power_mode));
     match &s.rails {
         Some(rails) => {
             let total = rails.iter().map(|(_, mw)| *mw as f64).sum::<f64>() / 1000.0;
@@ -456,18 +468,18 @@ fn draw_power(c: &mut Canvas, s: &Snapshot) {
 }
 
 fn draw_system(c: &mut Canvas, s: &Snapshot) {
-    let (x, y) = c.panel(4, "SYSTEM", CYAN, &s.hostname);
-    c.text(x + 16.0, y + 48.0, &s.time.format("%H:%M:%S").to_string(), 56.0, WHITE, true, Left);
-    c.text(x + 18.0, y + 120.0, &s.time.format("%Y-%m-%d").to_string(), 24.0, SUB, false, Left);
-    c.text(x + 350.0, y + 124.0, &s.time.format("%A").to_string(), 20.0, LABEL, false, Right);
-    c.hline(x + 20.0, y + 160.0, 330.0, LINE);
+    let (x, y) = c.panel(4, &s.hostname);
     let up = s.uptime as u64;
     let (d, hh, mm) = (up / 86400, up % 86400 / 3600, up % 3600 / 60);
     let uptime = if d > 0 { format!("{}d {}h {}m", d, hh, mm) } else { format!("{}h {}m", hh, mm) };
+    c.text(x + 20.0, y + 56.0, "Uptime", 20.0, LABEL, false, Left);
+    c.text(x + 18.0, y + 84.0, &uptime, 48.0, WHITE, true, Left);
+    c.hline(x + 20.0, y + 160.0, 330.0, LINE);
     let mut yy = y + 172.0;
-    for (k, v) in [("Uptime", uptime), ("Board", "AGX Xavier · L4T R35.6".to_string())] {
+    let own = format!("{:.2}% CPU · {:.0} MB", s.self_cpu, s.self_rss as f64 / 1048576.0);
+    for (k, v) in [("Board", "AGX Xavier · L4T R35.6"), ("JetsonTR", own.as_str())] {
         c.text(x + 20.0, yy, k, 18.0, LABEL, false, Left);
-        c.text(x + 350.0, yy, &v, 18.0, WHITE, false, Right);
+        c.text(x + 350.0, yy, v, 18.0, WHITE, false, Right);
         yy += 30.0;
     }
     let pct = if s.disk_total > 0 { 100.0 * s.disk_used as f64 / s.disk_total as f64 } else { 0.0 };
@@ -480,14 +492,34 @@ fn draw_system(c: &mut Canvas, s: &Snapshot) {
         &format!("R {}", fmt_rate(last(&h.disk_r))), &format!("W {}", fmt_rate(last(&h.disk_w))), "Disk I/O");
 }
 
-pub fn render(fonts: &Fonts, s: &Snapshot) -> Pixmap {
-    let mut c = Canvas::new(fonts);
-    draw_cpu(&mut c, s);
-    draw_gpu(&mut c, s);
-    draw_memory(&mut c, s);
-    draw_power(&mut c, s);
-    draw_system(&mut c, s);
-    c.pm
+/// Draws frames. The background and panel frames never change, so they are
+/// drawn once into `base`; each frame starts from a copy of it.
+pub struct Renderer {
+    pub fonts: Fonts,
+    base: Pixmap,
+}
+
+impl Renderer {
+    pub fn new(fonts: Fonts) -> Renderer {
+        let base = {
+            let mut c = Canvas::new(&fonts);
+            for i in 0..PANELS.len() {
+                c.panel_frame(i);
+            }
+            c.pm
+        };
+        Renderer { fonts, base }
+    }
+
+    pub fn render(&self, s: &Snapshot) -> Pixmap {
+        let mut c = Canvas { pm: self.base.clone(), fonts: &self.fonts };
+        draw_cpu(&mut c, s);
+        draw_gpu(&mut c, s);
+        draw_memory(&mut c, s);
+        draw_power(&mut c, s);
+        draw_system(&mut c, s);
+        c.pm
+    }
 }
 
 /// Simple color bars for the device test (no metrics needed).
@@ -500,30 +532,34 @@ pub fn test_pattern(fonts: &Fonts, phase: usize) -> Pixmap {
 }
 
 /// Convert to packed RGB, applying brightness gain and optional 180° rotation.
-pub fn to_rgb(pm: &Pixmap, brightness: f32, rotate: bool) -> Vec<u8> {
-    let px = pm.data();
-    let n = (pm.width() * pm.height()) as usize;
-    let mut out = vec![0u8; n * 3];
-    for i in 0..n {
-        let src = if rotate { n - 1 - i } else { i } * 4;
-        for k in 0..3 {
-            out[i * 3 + k] = (px[src + k] as f32 * brightness).min(255.0) as u8;
-        }
+/// Applies brightness (via a lookup table) and optional 180° rotation, giving
+/// RGBX bytes ready for the encoder. Alpha is always 255 here, so it is reused
+/// as the padding byte.
+pub fn to_rgbx(pm: &Pixmap, brightness: f32, rotate: bool) -> Vec<u8> {
+    let mut lut = [0u8; 256];
+    for (v, l) in lut.iter_mut().enumerate() {
+        *l = (v as f32 * brightness).min(255.0) as u8;
+    }
+    let src = pm.data();
+    let mut out = vec![255u8; src.len()];
+    let n = src.len() / 4;
+    for (i, d) in out.chunks_exact_mut(4).enumerate() {
+        let j = if rotate { n - 1 - i } else { i } * 4;
+        d[0] = lut[src[j] as usize];
+        d[1] = lut[src[j + 1] as usize];
+        d[2] = lut[src[j + 2] as usize];
     }
     out
 }
 
-pub fn encode_jpeg(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
-    let mut q = 90u8;
+pub fn encode_jpeg(rgbx: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let image = turbojpeg::Image { pixels: rgbx, width: w as usize, pitch: w as usize * 4, height: h as usize, format: turbojpeg::PixelFormat::RGBX };
+    let mut q = 90;
     loop {
-        let mut buf = Vec::new();
-        let mut enc = jpeg_encoder::Encoder::new(&mut buf, q);
-        // The panel's decoder needs 4:2:0 chroma subsampling; jpeg-encoder
-        // switches to 4:4:4 at quality >= 90, which the panel shows as blank.
-        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2);
-        enc.encode(rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).expect("jpeg encode");
+        // The panel's decoder needs 4:2:0 chroma subsampling; 4:4:4 shows as a blank screen.
+        let buf = turbojpeg::compress(image, q, turbojpeg::Subsamp::Sub2x2).expect("jpeg encode");
         if buf.len() <= crate::lcd::MAX_JPEG || q <= 30 {
-            return buf;
+            return buf.to_vec();
         }
         q -= 5;
     }

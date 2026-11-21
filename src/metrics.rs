@@ -1,14 +1,15 @@
-//! Metric collection for Jetson AGX Xavier from /proc, /sys and tegrastats.
+//! Metric collection for Jetson AGX Xavier from /proc and /sys.
+//!
+//! Everything tegrastats reports is read directly (GPU load, EMC activity,
+//! INA3221 power rails), so no helper process is needed. The EMC clock and
+//! the INA3221 currents are root-only; without root they show as missing.
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local};
 
 pub const HISTORY: usize = 60;
 
@@ -44,7 +45,6 @@ pub struct History {
 
 #[derive(Clone)]
 pub struct Snapshot {
-    pub time: DateTime<Local>,
     pub hostname: String,
     pub cpu: Vec<f64>,
     pub cpu_avg: f64,
@@ -70,6 +70,9 @@ pub struct Snapshot {
     pub disk_total: u64,
     pub disk_used: u64,
     pub rails: Option<Vec<(String, u32)>>,
+    /// This process's CPU use as a share of all cores (%), and its RSS (bytes).
+    pub self_cpu: f64,
+    pub self_rss: u64,
     pub fan_rpm: Option<u32>,
     pub fan_pwm: Option<u32>,
     pub power_mode: String,
@@ -91,57 +94,49 @@ fn read_u64(path: &str) -> Option<u64> {
     read(path).and_then(|s| s.parse().ok())
 }
 
-/// Latest values parsed from the tegrastats stream.
-#[derive(Clone, Default)]
-struct Tegra {
-    at: Option<Instant>,
-    emc: Option<u32>,
-    gr3d: Option<u32>,
-    rails: Vec<(String, u32)>,
+/// One INA3221 channel: label plus voltage (mV) and current (mA) files.
+struct Rail {
+    label: String,
+    mv: String,
+    ma: String,
 }
 
-fn parse_tegrastats(line: &str) -> Tegra {
-    let toks: Vec<&str> = line.split_whitespace().collect();
-    let mut t = Tegra { at: Some(Instant::now()), ..Default::default() };
-    let pct = |s: &str| s.split('%').next().and_then(|v| v.parse().ok());
-    for (i, tok) in toks.iter().enumerate() {
-        let next = toks.get(i + 1).copied().unwrap_or("");
-        match *tok {
-            "EMC_FREQ" => t.emc = pct(next),
-            "GR3D_FREQ" => t.gr3d = pct(next),
-            _ => {
-                // "<RAIL> <cur>mW/<avg>mW"
-                if let Some(cur) = next.split("mW/").next() {
-                    if next.ends_with("mW") && next.contains("mW/") && tok.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
-                        if let Ok(mw) = cur.parse() {
-                            t.rails.push((tok.to_string(), mw));
-                        }
-                    }
+fn find_rails() -> Vec<Rail> {
+    let mut rails = Vec::new();
+    let Ok(devs) = fs::read_dir("/sys/bus/i2c/drivers/ina3221") else { return rails };
+    let mut devs: Vec<_> = devs.flatten().map(|d| d.path()).collect();
+    devs.sort();
+    for dev in devs {
+        let Ok(hw) = fs::read_dir(dev.join("hwmon")) else { continue };
+        for h in hw.flatten() {
+            let h = h.path().display().to_string();
+            for ch in 1..=3 {
+                if let Some(label) = read(&format!("{}/in{}_label", h, ch)) {
+                    rails.push(Rail { label, mv: format!("{}/in{}_input", h, ch), ma: format!("{}/curr{}_input", h, ch) });
                 }
             }
         }
     }
-    t
+    rails
 }
 
-fn spawn_tegrastats(interval_ms: u64, slot: Arc<Mutex<Tegra>>) {
-    thread::spawn(move || loop {
-        if let Ok(mut child) = Command::new("tegrastats")
-            .args(["--interval", &interval_ms.to_string()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(out) = child.stdout.take() {
-                for line in BufReader::new(out).lines().map_while(Result::ok) {
-                    *slot.lock().unwrap() = parse_tegrastats(&line);
-                }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        thread::sleep(Duration::from_secs(5));
-    });
+/// EMC utilisation in percent: actmon's average memory-controller activity
+/// (kHz) over the current EMC clock. Matches tegrastats' EMC_FREQ.
+fn emc_util() -> Option<u32> {
+    let activity = read_u64("/sys/kernel/actmon_avg_activity/mc_all")?;
+    let rate_khz = read_u64("/sys/kernel/debug/clk/emc/clk_rate")? / 1000;
+    (rate_khz > 0).then(|| (activity * 100 / rate_khz).min(100) as u32)
+}
+
+/// Clock ticks per second for /proc/self/stat (USER_HZ is 100 on Linux/arm64).
+const USER_HZ: f64 = 100.0;
+
+fn self_ticks() -> u64 {
+    // Fields after the ")" that closes comm: state is field 3, utime 14, stime 15.
+    let stat = read("/proc/self/stat").unwrap_or_default();
+    let rest = stat.rsplit_once(')').map(|(_, r)| r).unwrap_or("");
+    let f: Vec<u64> = rest.split_whitespace().skip(11).take(2).filter_map(|v| v.parse().ok()).collect();
+    f.iter().sum()
 }
 
 /// Run a command with a hard timeout; returns stdout on success.
@@ -172,6 +167,7 @@ struct Counters {
     net: (u64, u64),
     disk: (u64, u64),
     swap: (u64, u64),
+    self_ticks: u64,
 }
 
 fn read_counters() -> Counters {
@@ -228,7 +224,16 @@ fn read_counters() -> Counters {
             }
         }
     }
-    Counters { at: Instant::now(), cpu, running, net, disk, swap }
+    Counters { at: Instant::now(), cpu, running, net, disk, swap, self_ticks: self_ticks() }
+}
+
+fn self_rss() -> u64 {
+    let status = read("/proc/self/status").unwrap_or_default();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+        .map_or(0, |kb| kb * 1024)
 }
 
 fn meminfo() -> std::collections::HashMap<String, u64> {
@@ -322,7 +327,7 @@ fn due(at: Option<Instant>, every: Duration) -> bool {
 
 pub struct Collector {
     iv: Intervals,
-    tegra: Arc<Mutex<Tegra>>,
+    rails: Vec<Rail>,
     prev: Option<Counters>,
     hist: [VecDeque<f64>; 6],
     cluster: Vec<u32>,
@@ -338,8 +343,6 @@ pub struct Collector {
 
 impl Collector {
     pub fn new(iv: Intervals) -> Collector {
-        let tegra = Arc::new(Mutex::new(Tegra::default()));
-        spawn_tegrastats(iv.fast.as_millis() as u64, tegra.clone());
         let ncpu = (0..).take_while(|i| fs::metadata(format!("/sys/devices/system/cpu/cpu{}", i)).is_ok()).count();
         let cluster = (0..ncpu)
             .map(|i| read_u64(&format!("/sys/devices/system/cpu/cpu{}/topology/physical_package_id", i)).unwrap_or(0) as u32)
@@ -359,7 +362,7 @@ impl Collector {
             .collect();
         Collector {
             iv,
-            tegra,
+            rails: find_rails(),
             prev: None,
             hist: Default::default(),
             cluster,
@@ -446,16 +449,16 @@ impl Collector {
         let mut li = load_s.split_whitespace().map(String::from);
         let load = [li.next().unwrap_or_default(), li.next().unwrap_or_default(), li.next().unwrap_or_default()];
 
-        let stale = self.iv.fast * 3 + Duration::from_secs(2);
-        let tg = {
-            let t = self.tegra.lock().unwrap();
-            if t.at.is_some_and(|a| a.elapsed() < stale) { t.clone() } else { Tegra::default() }
-        };
-        let gpu = tg
-            .gr3d
-            .map(f64::from)
-            .or_else(|| read_u64(&format!("{}/load", GPU_DEV)).map(|v| v as f64 / 10.0))
-            .unwrap_or(0.0);
+        let gpu = read_u64(&format!("{}/load", GPU_DEV)).map(|v| v as f64 / 10.0).unwrap_or(0.0);
+        let emc = emc_util();
+        let rails: Vec<(String, u32)> = self
+            .rails
+            .iter()
+            .filter_map(|r| Some((r.label.clone(), (read_u64(&r.mv)? * read_u64(&r.ma)? / 1000) as u32)))
+            .collect();
+        let ncpu = cpu.len().max(1) as f64;
+        let self_cpu = now.self_ticks.saturating_sub(prev.self_ticks) as f64 / USER_HZ / dt * 100.0 / ncpu;
+        let self_rss = self_rss();
         let engines = ENGINES
             .iter()
             .filter_map(|(label, dir)| read_u64(&format!("{}/{}/load", HOST1X, dir)).map(|v| (*label, v as f64 / 10.0)))
@@ -490,7 +493,6 @@ impl Collector {
         self.refresh_fixed();
         let (slow, fixed) = (self.slow.clone(), self.fixed.clone());
         Some(Snapshot {
-            time: Local::now(),
             hostname: self.hostname.clone(),
             cpu,
             cpu_avg,
@@ -504,7 +506,7 @@ impl Collector {
             gpu,
             gpu_mhz: (read_u64(&format!("{}/devfreq/17000000.gv11b/cur_freq", GPU_DEV)).unwrap_or(0) / 1_000_000) as u32,
             gpu_max_mhz: self.gpu_max_mhz,
-            emc: tg.emc,
+            emc,
             engines,
             mem_total,
             mem_used: mem_total.saturating_sub(mem_avail),
@@ -515,7 +517,9 @@ impl Collector {
             swap_used: g("SwapTotal").saturating_sub(g("SwapFree")),
             disk_total: fixed.disk_total,
             disk_used: fixed.disk_used,
-            rails: if tg.rails.is_empty() { None } else { Some(tg.rails) },
+            rails: if rails.is_empty() { None } else { Some(rails) },
+            self_cpu,
+            self_rss,
             fan_rpm: slow.fan_rpm,
             fan_pwm: slow.fan_pwm,
             power_mode: fixed.power_mode,
@@ -530,12 +534,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tegrastats_line() {
-        let l = "11-21-2026 00:21:33 RAM 1092/14887MB (lfb 3012x4MB) SWAP 0/7443MB (cached 0MB) CPU [0%@1190,0%@1188] EMC_FREQ 3%@1331 GR3D_FREQ 12%@[114] VIC_FREQ 1036 APE 150 CPU@34C GPU 0mW/0mW CPU 619mW/619mW SOC 1393mW/1393mW SYS5V 2773mW/2773mW";
-        let t = parse_tegrastats(l);
-        assert_eq!(t.emc, Some(3));
-        assert_eq!(t.gr3d, Some(12));
-        assert_eq!(t.rails.len(), 4);
-        assert_eq!(t.rails[2], ("SOC".to_string(), 1393));
+    fn own_cpu_ticks() {
+        let t0 = self_ticks();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(100) {}
+        assert!(self_ticks() > t0);
     }
 }
