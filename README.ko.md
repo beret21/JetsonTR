@@ -112,6 +112,15 @@ journalctl -u thermalright-lcd -f
 
 줄인 방법: 시계를 없애 5초 갱신으로 충분하게 했고, GPU·EMC·전력은 `tegrastats` 자식 프로세스 대신 sysfs에서 직접 읽습니다. 변하지 않는 배경은 한 번만 그려 재사용하고, JPEG은 순수 Rust 인코더 대신 libjpeg-turbo(NEON)로 압축합니다. 밝기는 조회 테이블로 적용하고, USB는 4KB 대신 64KB 단위로 씁니다. SYSTEM 패널에 JetsonTR 자신의 CPU(8코어 전체 대비)와 메모리 사용량을 표시해 비용을 바로 확인할 수 있습니다.
 
+## 버전 규칙
+
+`#.#.##` 형식으로 번호를 작게 유지합니다.
+
+- 릴리스할 때마다 세 번째 숫자를 올립니다(`0.2.1`, `0.2.2`, …).
+- 두 번째 숫자는 개선이 100회 정도 쌓였을 때만 올립니다.
+
+전체 규칙과 릴리스 절차는 [AGENTS.md](AGENTS.md)에 있습니다.
+
 ## 감사의 말
 
 - [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux): LY bulk 프로토콜 역공학 

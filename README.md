@@ -112,6 +112,15 @@ journalctl -u thermalright-lcd -f
 
 What got it down: no clock, so a 5 s refresh is enough; GPU/EMC/power read from sysfs instead of a `tegrastats` child process; the static background drawn once and reused; libjpeg-turbo (NEON) instead of a pure-Rust encoder; a lookup table for brightness; and 64 KB USB writes instead of 4 KB. The SYSTEM panel shows JetsonTR's own CPU (as a share of all 8 cores) and memory, so the cost stays visible.
 
+## Versioning
+
+Humble `#.#.##` numbering:
+
+- Each release bumps the third number (`0.2.1`, `0.2.2`, …).
+- The second number goes up only after about 100 improvements.
+
+See [AGENTS.md](AGENTS.md) for the full rule and release steps.
+
 ## Acknowledgments
 
 - [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux): reverse engineering of the LY bulk protocol 
